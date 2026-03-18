@@ -1,15 +1,22 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { motion } from "framer-motion";
 import { TradingSidebar } from "@/components/TradingSidebar";
 import { ChartPanel } from "@/components/ChartPanels";
+import { TimeframeBar } from "@/components/TimeframeBar";
 import { StatsBar } from "@/components/StatsBar";
 import { parseCSV, type Dataset } from "@/lib/csvParser";
 import { type ChartType, type ChartPanelConfig, CHART_TYPE_INFO } from "@/lib/chartTypes";
 import { mockCandles, mockStats } from "@/lib/mockData";
 import { getNextColor } from "@/lib/csvParser";
+import {
+  type Timeframe,
+  TIMEFRAMES,
+  aggregateToTimeframe,
+  detectBaseTimeframe,
+  getAvailableTimeframes,
+} from "@/lib/timeframeUtils";
 
 const Index = () => {
-  // Create a default dataset from mock data
   const [datasets, setDatasets] = useState<Dataset[]>(() => [
     { id: "mock-btc", name: "BTC/USDT (Demo)", data: mockCandles, color: "hsl(165, 80%, 45%)" },
   ]);
@@ -19,6 +26,24 @@ const Index = () => {
     { id: "default-rsi", type: "rsi", datasetId: "mock-btc" },
     { id: "default-macd", type: "macd", datasetId: "mock-btc" },
   ]);
+
+  const [activeTimeframe, setActiveTimeframe] = useState<Timeframe>("1D");
+
+  // Detect base timeframe from first dataset
+  const baseTimeframe = useMemo(() => {
+    if (datasets.length === 0) return "1D" as Timeframe;
+    return detectBaseTimeframe(datasets[0].data);
+  }, [datasets]);
+
+  const availableTimeframes = useMemo(() => getAvailableTimeframes(baseTimeframe), [baseTimeframe]);
+
+  // Aggregate datasets for the active timeframe
+  const aggregatedDatasets = useMemo(() => {
+    return datasets.map((ds) => ({
+      ...ds,
+      data: aggregateToTimeframe(ds.data, activeTimeframe),
+    }));
+  }, [datasets, activeTimeframe]);
 
   const handleUploadCSV = useCallback(async (file: File) => {
     try {
@@ -48,21 +73,9 @@ const Index = () => {
     setChartPanels((prev) => prev.filter((p) => p.id !== id));
   }, []);
 
-  // Separate main charts and overlays/oscillators
-  const mainCharts = chartPanels.filter((p) => {
-    const info = CHART_TYPE_INFO[p.type];
-    return info.category === "main";
-  });
-
-  const oscillators = chartPanels.filter((p) => {
-    const info = CHART_TYPE_INFO[p.type];
-    return info.category === "oscillator";
-  });
-
-  const overlays = chartPanels.filter((p) => {
-    const info = CHART_TYPE_INFO[p.type];
-    return info.category === "overlay";
-  });
+  const mainCharts = chartPanels.filter((p) => CHART_TYPE_INFO[p.type].category === "main");
+  const oscillators = chartPanels.filter((p) => CHART_TYPE_INFO[p.type].category === "oscillator");
+  const overlays = chartPanels.filter((p) => CHART_TYPE_INFO[p.type].category === "overlay");
 
   return (
     <div className="flex min-h-screen bg-background">
@@ -87,6 +100,13 @@ const Index = () => {
           </div>
         </header>
 
+        {/* Timeframe bar */}
+        <TimeframeBar
+          activeTimeframe={activeTimeframe}
+          availableTimeframes={availableTimeframes}
+          onTimeframeChange={setActiveTimeframe}
+        />
+
         {/* Charts area */}
         <motion.div
           className="flex-1 p-3 space-y-2 overflow-y-auto"
@@ -100,9 +120,8 @@ const Index = () => {
             </div>
           )}
 
-          {/* Main charts with their overlays */}
           {mainCharts.map((panel) => {
-            const dataset = datasets.find((d) => d.id === panel.datasetId);
+            const dataset = aggregatedDatasets.find((d) => d.id === panel.datasetId);
             if (!dataset) return null;
             const panelOverlays = overlays.filter((o) => o.datasetId === panel.datasetId);
             return (
@@ -112,15 +131,15 @@ const Index = () => {
                 dataset={dataset}
                 onRemove={handleRemoveChart}
                 overlays={panelOverlays}
+                timeframe={activeTimeframe}
               />
             );
           })}
 
-          {/* Oscillator charts */}
           {oscillators.length > 0 && (
             <div className="grid grid-cols-2 gap-2">
               {oscillators.map((panel) => {
-                const dataset = datasets.find((d) => d.id === panel.datasetId);
+                const dataset = aggregatedDatasets.find((d) => d.id === panel.datasetId);
                 if (!dataset) return null;
                 return (
                   <ChartPanel
@@ -128,6 +147,7 @@ const Index = () => {
                     config={panel}
                     dataset={dataset}
                     onRemove={handleRemoveChart}
+                    timeframe={activeTimeframe}
                   />
                 );
               })}
@@ -135,7 +155,6 @@ const Index = () => {
           )}
         </motion.div>
 
-        {/* Stats bar */}
         <StatsBar stats={mockStats} />
       </div>
     </div>
