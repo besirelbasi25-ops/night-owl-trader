@@ -13,8 +13,9 @@ import {
   Cell,
 } from "recharts";
 import { X } from "lucide-react";
-import type { ChartPanelConfig, ChartType } from "@/lib/chartTypes";
+import type { ChartPanelConfig } from "@/lib/chartTypes";
 import type { Dataset, EnrichedCandleData } from "@/lib/csvParser";
+import type { Timeframe } from "@/lib/timeframeUtils";
 
 const tooltipStyle = {
   backgroundColor: "hsl(220, 18%, 10%)",
@@ -27,7 +28,7 @@ const tooltipStyle = {
 const gridStroke = "hsl(220, 15%, 14%)";
 const axisTickStyle = { fill: "hsl(215, 15%, 50%)", fontSize: 10, fontFamily: "JetBrains Mono" };
 
-// Candlestick shape
+// Candlestick shape — dynamically sized
 const CandlestickShape = (props: any) => {
   const { x, width, payload } = props;
   if (!payload) return null;
@@ -42,22 +43,45 @@ const CandlestickShape = (props: any) => {
   const wickBottom = yScale(low);
   const center = x + width / 2;
 
+  // Thinner wick for narrow candles
+  const wickWidth = width < 3 ? 0.5 : 1;
+  const bodyPad = width < 4 ? 0.1 : 0.15;
+
   return (
     <g>
-      <line x1={center} y1={wickTop} x2={center} y2={wickBottom} stroke="hsl(210, 15%, 45%)" strokeWidth={1} />
-      <rect x={x + width * 0.15} y={bodyTop} width={width * 0.7} height={bodyHeight} fill={color} stroke={color} strokeWidth={0.5} rx={1} />
+      <line x1={center} y1={wickTop} x2={center} y2={wickBottom} stroke="hsl(210, 15%, 45%)" strokeWidth={wickWidth} />
+      <rect
+        x={x + width * bodyPad}
+        y={bodyTop}
+        width={Math.max(width * (1 - bodyPad * 2), 1)}
+        height={bodyHeight}
+        fill={color}
+        stroke={color}
+        strokeWidth={width < 3 ? 0 : 0.5}
+        rx={width < 4 ? 0 : 1}
+      />
     </g>
   );
 };
+
+/** Calculate dynamic bar size based on data length */
+function getBarSize(dataLength: number, chartWidth: number = 1200): number {
+  // Available width for bars (minus margins/axis ~90px)
+  const available = chartWidth - 90;
+  // Each candle needs some gap
+  const maxBarWidth = Math.floor(available / dataLength * 0.8);
+  return Math.max(1, Math.min(maxBarWidth, 12));
+}
 
 interface ChartPanelProps {
   config: ChartPanelConfig;
   dataset: Dataset;
   onRemove: (id: string) => void;
   overlays?: ChartPanelConfig[];
+  timeframe?: Timeframe;
 }
 
-export function ChartPanel({ config, dataset, onRemove, overlays = [] }: ChartPanelProps) {
+export function ChartPanel({ config, dataset, onRemove, overlays = [], timeframe }: ChartPanelProps) {
   const { type } = config;
   const data = dataset.data as EnrichedCandleData[];
   const label = dataset.name;
@@ -66,7 +90,7 @@ export function ChartPanel({ config, dataset, onRemove, overlays = [] }: ChartPa
   if (type === "macd") return <MACDPanel data={data} label={label} onRemove={() => onRemove(config.id)} />;
   if (type === "volume") return <VolumePanel data={data} label={label} onRemove={() => onRemove(config.id)} />;
 
-  return <MainChartPanel config={config} dataset={dataset} onRemove={() => onRemove(config.id)} overlays={overlays} />;
+  return <MainChartPanel config={config} dataset={dataset} onRemove={() => onRemove(config.id)} overlays={overlays} timeframe={timeframe} />;
 }
 
 function MainChartPanel({
@@ -74,11 +98,13 @@ function MainChartPanel({
   dataset,
   onRemove,
   overlays,
+  timeframe,
 }: {
   config: ChartPanelConfig;
   dataset: Dataset;
   onRemove: () => void;
   overlays: ChartPanelConfig[];
+  timeframe?: Timeframe;
 }) {
   const data = dataset.data as EnrichedCandleData[];
   const { type } = config;
@@ -99,6 +125,8 @@ function MainChartPanel({
     };
   }, [data]);
 
+  const barSize = useMemo(() => getBarSize(data.length), [data.length]);
+
   const lastCandle = data[data.length - 1];
   const prevCandle = data[data.length - 2];
   const priceChange = lastCandle && prevCandle ? lastCandle.close - prevCandle.close : 0;
@@ -107,12 +135,20 @@ function MainChartPanel({
 
   const typeLabels: Record<string, string> = { candlestick: "Candlestick", line: "Line", area: "Area" };
 
+  // Dynamic tick interval based on data length
+  const tickInterval = Math.max(1, Math.floor(data.length / 10));
+
   return (
     <div className="bg-card rounded-lg border border-border overflow-hidden">
       <div className="flex items-center justify-between px-4 py-3 border-b border-border">
         <div className="flex items-center gap-4">
           <h2 className="text-sm font-semibold text-foreground">{dataset.name}</h2>
           <span className="text-xs font-mono text-muted-foreground">{typeLabels[type] || type}</span>
+          {timeframe && (
+            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium">
+              {timeframe}
+            </span>
+          )}
           {lastCandle && (
             <div className="flex items-center gap-2">
               <span className="text-sm font-mono text-foreground">{lastCandle.close.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
@@ -131,20 +167,45 @@ function MainChartPanel({
             </div>
           )}
         </div>
-        <button onClick={onRemove} className="text-muted-foreground hover:text-foreground transition-colors">
-          <X className="h-4 w-4" />
-        </button>
+        <div className="flex items-center gap-3">
+          {lastCandle && (
+            <div className="flex items-center gap-1">
+              {(["O", "H", "L", "C"] as const).map((label, i) => {
+                const vals = [lastCandle.open, lastCandle.high, lastCandle.low, lastCandle.close];
+                return (
+                  <span key={label} className="text-[10px] font-mono text-muted-foreground">
+                    <span className="text-muted-foreground/60">{label}</span>{" "}
+                    <span className="text-foreground">{vals[i]?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    {i < 3 && <span className="mx-1 text-border">|</span>}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+          <button onClick={onRemove} className="text-muted-foreground hover:text-foreground transition-colors">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
       </div>
-      <div className="h-[350px] px-2 pt-2">
+      <div className="h-[400px] px-2 pt-2">
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart data={chartData} margin={{ top: 10, right: 10, bottom: 0, left: 10 }}>
             <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" vertical={false} />
-            <XAxis dataKey="time" tick={axisTickStyle} axisLine={{ stroke: "hsl(220, 15%, 18%)" }} tickLine={false} interval={Math.floor(data.length / 8)} />
+            <XAxis
+              dataKey="time"
+              tick={axisTickStyle}
+              axisLine={{ stroke: "hsl(220, 15%, 18%)" }}
+              tickLine={false}
+              interval={tickInterval}
+              angle={data.length > 200 ? -45 : 0}
+              textAnchor={data.length > 200 ? "end" : "middle"}
+              height={data.length > 200 ? 50 : 30}
+            />
             <YAxis domain={[minPrice, maxPrice]} tick={axisTickStyle} axisLine={false} tickLine={false} orientation="right" tickFormatter={(v: number) => v.toLocaleString()} width={70} />
             <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: "hsl(210, 20%, 75%)" }} />
 
             {type === "candlestick" && (
-              <Bar dataKey="range" barSize={8} shape={<CandlestickShape yScale={undefined} />}>
+              <Bar dataKey="range" barSize={barSize} shape={<CandlestickShape yScale={undefined} />}>
                 {chartData.map((entry, index) => (
                   <Cell key={index} fill={entry.close >= entry.open ? "hsl(165, 80%, 45%)" : "hsl(0, 75%, 55%)"} />
                 ))}
@@ -157,7 +218,6 @@ function MainChartPanel({
               <Area type="monotone" dataKey="close" stroke={dataset.color} fill={dataset.color} fillOpacity={0.15} strokeWidth={1.5} />
             )}
 
-            {/* Overlays */}
             {overlays.some((o) => o.type === "bollinger") && (
               <>
                 <Line type="monotone" dataKey="bb_upper" stroke="hsl(38, 90%, 55%)" strokeWidth={1} dot={false} strokeDasharray="4 4" />
@@ -206,6 +266,8 @@ function RSIPanel({ data, label, onRemove }: { data: EnrichedCandleData[]; label
 }
 
 function MACDPanel({ data, label, onRemove }: { data: EnrichedCandleData[]; label: string; onRemove: () => void }) {
+  const barSize = useMemo(() => getBarSize(data.length), [data.length]);
+
   return (
     <div className="bg-card rounded-lg border border-border overflow-hidden">
       <div className="flex items-center justify-between px-4 py-2 border-b border-border">
@@ -223,7 +285,7 @@ function MACDPanel({ data, label, onRemove }: { data: EnrichedCandleData[]; labe
             <YAxis tick={{ ...axisTickStyle, fontSize: 9 }} axisLine={false} tickLine={false} orientation="right" width={40} />
             <ReferenceLine y={0} stroke="hsl(220, 15%, 25%)" />
             <Tooltip contentStyle={tooltipStyle} />
-            <Bar dataKey="histogram" barSize={4}>
+            <Bar dataKey="histogram" barSize={Math.max(1, barSize - 2)}>
               {data.map((entry, i) => (
                 <Cell key={i} fill={entry.histogram >= 0 ? "hsl(165, 80%, 45%)" : "hsl(0, 75%, 55%)"} fillOpacity={0.7} />
               ))}
@@ -238,6 +300,8 @@ function MACDPanel({ data, label, onRemove }: { data: EnrichedCandleData[]; labe
 }
 
 function VolumePanel({ data, label, onRemove }: { data: EnrichedCandleData[]; label: string; onRemove: () => void }) {
+  const barSize = useMemo(() => getBarSize(data.length), [data.length]);
+
   return (
     <div className="bg-card rounded-lg border border-border overflow-hidden">
       <div className="flex items-center justify-between px-4 py-2 border-b border-border">
@@ -251,7 +315,7 @@ function VolumePanel({ data, label, onRemove }: { data: EnrichedCandleData[]; la
             <XAxis dataKey="time" hide />
             <YAxis tick={{ ...axisTickStyle, fontSize: 9 }} axisLine={false} tickLine={false} orientation="right" width={50} />
             <Tooltip contentStyle={tooltipStyle} />
-            <Bar dataKey="volume" barSize={6}>
+            <Bar dataKey="volume" barSize={barSize}>
               {data.map((entry, i) => (
                 <Cell key={i} fill={entry.close >= entry.open ? "hsl(165, 80%, 45%)" : "hsl(0, 75%, 55%)"} fillOpacity={0.5} />
               ))}
